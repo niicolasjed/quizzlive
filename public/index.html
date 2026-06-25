@@ -413,7 +413,7 @@ label{font-size:.85rem;color:var(--muted);display:block;margin-bottom:.4rem}
         <h3 style="font-size:.9rem;margin-bottom:1rem;color:var(--muted)">Top 5</h3>
         <div id="player-res-lb"></div>
       </div>
-      <button class="btn btn-secondary" style="width:100%;justify-content:center;margin-top:1.5rem" onclick="goTo('screen-home');state.ws?.close()">Retour à l'accueil</button>
+      <button class="btn btn-secondary" style="width:100%;justify-content:center;margin-top:1.5rem" onclick="state._reconnect=null;state.ws?.close();goTo('screen-home')">Retour à l'accueil</button>
     </div>
   </div>
 </div>
@@ -458,12 +458,34 @@ function esc(s) {
 // ════════════════════════════════════════════════════════════════════════════
 function connectWS(onOpen) {
   if (state.ws) { state.ws.onclose = null; state.ws.close(); }
+  clearInterval(state.pingInterval);
+
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}`);
   state.ws = ws;
-  ws.onopen = onOpen;
+
+  ws.onopen = () => {
+    // Ping toutes les 20s pour garder la connexion vivante
+    state.pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+    }, 20000);
+    onOpen();
+  };
+
   ws.onmessage = e => handleWS(JSON.parse(e.data));
-  ws.onerror = () => toast('Connexion perdue, rechargez la page');
+
+  ws.onclose = () => {
+    clearInterval(state.pingInterval);
+    // Reconnexion automatique si on était dans une session active
+    if (state._reconnect) {
+      toast('Reconnexion...');
+      setTimeout(() => connectWS(state._reconnect), 2000);
+    } else {
+      toast('Connexion perdue — rechargez la page si nécessaire');
+    }
+  };
+
+  ws.onerror = () => {};
   return ws;
 }
 
@@ -746,7 +768,9 @@ async function launchSession(quizId) {
   document.getElementById('start-btn').disabled = true;
   goTo('screen-lobby-host');
 
-  connectWS(() => wsSend({ type:'host_join', sessionId: r.id, token: state.token }));
+  const doHostConnect = () => wsSend({ type:'host_join', sessionId: r.id, token: state.token });
+  state._reconnect = doHostConnect;
+  connectWS(() => doHostConnect());
 }
 
 function onSessionState(session) {
@@ -840,10 +864,12 @@ async function joinSession() {
   document.getElementById('player-name-top').textContent = name;
   goTo('screen-lobby-player');
 
-  connectWS(() => {
+  const doConnect = () => {
     state.ws.meta = { role: 'player' };
     wsSend({ type:'player_join', sessionId: r.id, name });
-  });
+  };
+  state._reconnect = doConnect;
+  connectWS(() => doConnect());
 }
 
 function onJoined({ playerId, session }) {

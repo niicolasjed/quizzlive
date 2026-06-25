@@ -271,10 +271,16 @@ function revealAnswer(sessionId, qIndex) {
 
 wss.on('connection', ws => {
   ws.meta = {};
+  ws.isAlive = true;
+
+  ws.on('pong', () => { ws.isAlive = true; });
+
   ws.on('message', raw => {
     let msg; try { msg = JSON.parse(raw); } catch { return; }
+    if (msg.type === 'ping') { sendTo(ws, { type: 'pong' }); return; }
     handlers[msg.type]?.(ws, msg);
   });
+
   ws.on('close', () => {
     const { sessionId, role, playerId } = ws.meta;
     if (!sessionId) return;
@@ -283,6 +289,15 @@ wss.on('connection', ws => {
     else if (playerId) room.playerWs.delete(playerId);
   });
 });
+
+// Ping toutes les 25s pour garder les connexions vivantes (Railway coupe à 60s)
+const pingInterval = setInterval(() => {
+  wss.clients.forEach(ws => {
+    if (ws.isAlive === false) { ws.terminate(); return; }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 25000);
 
 const handlers = {
   host_join(ws, { sessionId, token }) {
